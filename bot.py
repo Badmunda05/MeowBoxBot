@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 MeowBox File Uploader Bot
 Author : @BadmundaXD

@@ -108,7 +108,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = []
     if DEVELOPER_ID:
-        buttons.append([InlineKeyboardButton("Developer 👨‍💻", url=f"tg://user?id={DEVELOPER_ID}")])
+        buttons.append([InlineKeyboardButton("Developer 👨‍💻", url="https://t.me/BadMundaXD")])
     if CHANNEL_USERNAME:
         buttons.append([InlineKeyboardButton("Join Channel 📢", url=f"https://t.me/{clean_channel(CHANNEL_USERNAME)}")])
 
@@ -254,7 +254,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Upload using meowbox library
         results = await upload_async(str(path))
-        url = results[0]["url"]
+        url = results[0]  # returns list of URL strings directly
 
         buttons = [
             [InlineKeyboardButton("🔗 Open Link", url=url)],

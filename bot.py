@@ -1,7 +1,7 @@
 """
 MeowBox File Uploader Bot
 Author : @BadmundaXD
-Updated: Private-only uploads | Group commands with membership check | Reply-safe
+Updated: /tgm reply in group → upload & give link IN GROUP | PM for direct files
 """
 
 import os
@@ -48,7 +48,6 @@ def is_group(update: Update) -> bool:
 
 
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Force-sub check for private chat uploads."""
     if not CHANNEL_USERNAME or not FORCE_SUB:
         return True
     try:
@@ -62,7 +61,6 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def check_group_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user has joined the channel (for group commands)."""
     if not CHANNEL_USERNAME:
         return True
     try:
@@ -85,29 +83,100 @@ def fmt_size(b: int) -> str:
     return f"{b / 1024 ** 3:.2f} GB"
 
 
-def build_bot_link_message(user_first_name: str) -> tuple[str, list]:
-    """Build the group reply message + buttons."""
-    bot_user = clean_channel(BOT_USERNAME) if BOT_USERNAME else None
-    bot_link = f"https://t.me/{bot_user}" if bot_user else None
+async def upload_and_reply(msg_with_file, reply_target, context):
+    """
+    Core upload logic.
+    msg_with_file = message containing the actual file
+    reply_target  = message to reply to with the result
+    """
+    file_obj = None
+    filename = "upload"
+    file_type_label = "File"
 
-    buttons = []
-    if bot_link:
-        buttons.append([InlineKeyboardButton("📩 Open MeowBox Bot", url=bot_link)])
-    if CHANNEL_USERNAME:
-        buttons.append([InlineKeyboardButton("📢 Our Channel",
-                        url=f"https://t.me/{clean_channel(CHANNEL_USERNAME)}")])
+    if msg_with_file.photo:
+        file_obj = msg_with_file.photo[-1]
+        filename = f"photo_{file_obj.file_id[-8:]}.jpg"
+        file_type_label = "📷 Photo"
+    elif msg_with_file.document:
+        file_obj = msg_with_file.document
+        filename = msg_with_file.document.file_name or f"file_{msg_with_file.document.file_id[-8:]}"
+        file_type_label = "📄 Document"
+    elif msg_with_file.video:
+        file_obj = msg_with_file.video
+        filename = f"video_{msg_with_file.video.file_id[-8:]}.mp4"
+        file_type_label = "🎬 Video"
+    elif msg_with_file.audio:
+        file_obj = msg_with_file.audio
+        filename = msg_with_file.audio.file_name or f"audio_{msg_with_file.audio.file_id[-8:]}.mp3"
+        file_type_label = "🎵 Audio"
+    elif msg_with_file.voice:
+        file_obj = msg_with_file.voice
+        filename = f"voice_{msg_with_file.voice.file_id[-8:]}.ogg"
+        file_type_label = "🎤 Voice"
+    elif msg_with_file.video_note:
+        file_obj = msg_with_file.video_note
+        filename = f"videonote_{msg_with_file.video_note.file_id[-8:]}.mp4"
+        file_type_label = "📹 Video Note"
+    elif msg_with_file.sticker:
+        file_obj = msg_with_file.sticker
+        ext = ".tgs" if msg_with_file.sticker.is_animated else ".webm" if msg_with_file.sticker.is_video else ".webp"
+        filename = f"sticker_{msg_with_file.sticker.file_id[-8:]}{ext}"
+        file_type_label = "🎭 Sticker"
+    else:
+        await reply_target.reply_text("❌ No supported file found in the replied message.")
+        return
 
-    text = (
-        f"<b>👋 Hey {user_first_name}!</b>\n\n"
-        f"<b>🐱 MeowBox File Uploader</b>\n\n"
-        f"Send any file and get a permanent direct link!\n\n"
-        f"<b>✅ Supported:</b>\n"
-        f"📷 Photos  •  🎬 Videos  •  📄 Documents\n"
-        f"🎵 Audio  •  🎤 Voice  •  📹 Video Notes  •  🎭 Stickers\n\n"
-        f"<b>📦 Max size:</b> {MAX_FILE_MB} MB\n\n"
-        f"<i>Click the button below to open a private chat and send your file 👇</i>"
-    )
-    return text, buttons
+    file_size = getattr(file_obj, "file_size", 0) or 0
+    if file_size > MAX_FILE_MB * 1024 * 1024:
+        await reply_target.reply_text(
+            f"❌ <b>File too large!</b>\n"
+            f"Your file: <b>{fmt_size(file_size)}</b>\n"
+            f"Max allowed: <b>{MAX_FILE_MB} MB</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    status_msg = await reply_target.reply_text("⏳ <b>Uploading to MeowBox...</b>", parse_mode="HTML")
+
+    path = None
+    try:
+        tg_file = await context.bot.get_file(file_obj.file_id)
+        path = await tg_file.download_to_drive(filename)
+
+        results = await upload_async(str(path))
+        url = results[0]
+
+        result_text = (
+            f"<b>✅ Uploaded to MeowBox!</b>\n\n"
+            f"<b>Type:</b> {file_type_label}\n"
+            f"<b>📎 File:</b> <code>{filename}</code>\n"
+            f"<b>📦 Size:</b> {fmt_size(file_size)}\n"
+            f"<b>🔗 Link:</b> <code>{url}</code>\n\n"
+            f"<i>♾️ Permanent — never expires</i>"
+        )
+
+        try:
+            buttons = [
+                [InlineKeyboardButton("📋 Copy Link", copy_text=url)],
+                [InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={url}")],
+            ]
+            await status_msg.edit_text(result_text, parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            buttons = [
+                [InlineKeyboardButton("🔗 Open Link", url=url)],
+                [InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={url}")],
+            ]
+            await status_msg.edit_text(result_text, parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(buttons))
+
+    except Exception as e:
+        log.error(f"Upload error: {e}")
+        await status_msg.edit_text(f"❌ Upload failed: {e}")
+
+    finally:
+        if path and os.path.exists(str(path)):
+            os.remove(str(path))
 
 
 # ─── Private Chat Handlers ────────────────────────────────────────────────────
@@ -117,7 +186,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
-
     buttons = []
     if DEVELOPER_ID:
         buttons.append([InlineKeyboardButton("Developer 👨‍💻", url="https://t.me/BadMundaXD")])
@@ -163,11 +231,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.warning(f"reply_photo failed: {e}")
 
     try:
-        await update.message.reply_text(
-            caption,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(caption, parse_mode="HTML", reply_markup=reply_markup)
     except Exception as e:
         log.error(f"Text fallback failed: {e}")
 
@@ -191,11 +255,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handle incoming files — PRIVATE CHAT ONLY.
-    Group messages are completely ignored (silently).
-    """
-    # ✅ Double safety: ignore anything not from private chat
+    """Handle files sent directly in PRIVATE chat only."""
     if not is_private(update):
         return
 
@@ -205,7 +265,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
-    # Force-sub check
     if not await check_subscription(user_id, context):
         ch = clean_channel(CHANNEL_USERNAME)
         await msg.reply_text(
@@ -217,94 +276,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    file_obj = None
-    filename = "upload"
-    file_type_label = "File"
-
-    if msg.photo:
-        file_obj = msg.photo[-1]
-        filename = f"photo_{file_obj.file_id[-8:]}.jpg"
-        file_type_label = "📷 Photo"
-    elif msg.document:
-        file_obj = msg.document
-        filename = msg.document.file_name or f"file_{msg.document.file_id[-8:]}"
-        file_type_label = "📄 Document"
-    elif msg.video:
-        file_obj = msg.video
-        filename = f"video_{msg.video.file_id[-8:]}.mp4"
-        file_type_label = "🎬 Video"
-    elif msg.audio:
-        file_obj = msg.audio
-        filename = msg.audio.file_name or f"audio_{msg.audio.file_id[-8:]}.mp3"
-        file_type_label = "🎵 Audio"
-    elif msg.voice:
-        file_obj = msg.voice
-        filename = f"voice_{msg.voice.file_id[-8:]}.ogg"
-        file_type_label = "🎤 Voice"
-    elif msg.video_note:
-        file_obj = msg.video_note
-        filename = f"videonote_{msg.video_note.file_id[-8:]}.mp4"
-        file_type_label = "📹 Video Note"
-    elif msg.sticker:
-        file_obj = msg.sticker
-        ext = ".tgs" if msg.sticker.is_animated else ".webm" if msg.sticker.is_video else ".webp"
-        filename = f"sticker_{msg.sticker.file_id[-8:]}{ext}"
-        file_type_label = "🎭 Sticker"
-    else:
-        await msg.reply_text("❌ Unsupported file type.")
-        return
-
-    file_size = getattr(file_obj, "file_size", 0) or 0
-    if file_size > MAX_FILE_MB * 1024 * 1024:
-        await msg.reply_text(
-            f"❌ <b>File too large!</b>\n"
-            f"Your file: <b>{fmt_size(file_size)}</b>\n"
-            f"Max allowed: <b>{MAX_FILE_MB} MB</b>",
-            parse_mode="HTML"
-        )
-        return
-
-    status_msg = await msg.reply_text("⏳ <b>Uploading to MeowBox...</b>", parse_mode="HTML")
-
-    path = None
-    try:
-        tg_file = await context.bot.get_file(file_obj.file_id)
-        path = await tg_file.download_to_drive(filename)
-
-        results = await upload_async(str(path))
-        url = results[0]
-
-        result_text = (
-            f"<b>✅ Uploaded to MeowBox!</b>\n\n"
-            f"<b>Type:</b> {file_type_label}\n"
-            f"<b>📎 File:</b> <code>{filename}</code>\n"
-            f"<b>📦 Size:</b> {fmt_size(file_size)}\n"
-            f"<b>🔗 Link:</b> <code>{url}</code>\n\n"
-            f"<i>♾️ Permanent — never expires</i>"
-        )
-
-        try:
-            buttons = [
-                [InlineKeyboardButton("📋 Copy Link", copy_text=url)],
-                [InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={url}")],
-            ]
-            await status_msg.edit_text(result_text, parse_mode="HTML",
-                                       reply_markup=InlineKeyboardMarkup(buttons))
-        except Exception:
-            buttons = [
-                [InlineKeyboardButton("🔗 Open Link", url=url)],
-                [InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={url}")],
-            ]
-            await status_msg.edit_text(result_text, parse_mode="HTML",
-                                       reply_markup=InlineKeyboardMarkup(buttons))
-
-    except Exception as e:
-        log.error(f"Upload error: {e}")
-        await status_msg.edit_text(f"❌ Upload failed: {e}")
-
-    finally:
-        if path and os.path.exists(str(path)):
-            os.remove(str(path))
+    await upload_and_reply(msg, msg, context)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -318,55 +290,77 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ─── Group Commands ───────────────────────────────────────────────────────────
+# ─── Group Command ────────────────────────────────────────────────────────────
 
 async def group_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /tgm /tm /meowbox — works in groups only.
-    Works whether command is sent normally OR as a reply to any media/message.
-    Only checks channel membership, then sends bot link. Never uploads anything.
+    /tgm /tm /meowbox in GROUP:
+      - Reply to any media  →  upload that file  →  send link IN THE GROUP
+      - No reply            →  tell user how to use
+    Also checks channel membership.
     """
     msg = update.message
     if msg is None:
         return
 
-    # If used in private, just show a hint
+    # Private chat
     if is_private(update):
         await msg.reply_text(
-            "ℹ️ This command is for groups. In private chat, just send me a file directly!",
+            "📩 Just send the file directly here and I will give you the link!",
             parse_mode="HTML"
         )
         return
 
-    # Only handle in groups/supergroups
     if not is_group(update):
         return
 
     user = update.effective_user
     user_id = user.id
 
+    # ── 1. Channel membership check ──
     has_joined = await check_group_membership(user_id, context)
-
     if not has_joined:
         ch = clean_channel(CHANNEL_USERNAME)
         await msg.reply_text(
             f"<b>👋 Hey {user.first_name}!</b>\n\n"
-            f"Please <b>join our channel first</b>, then you can use this bot!\n\n"
+            f"Please join our channel first before using this bot!\n\n"
             f"<a href='https://t.me/{ch}'>👉 Join @{ch}</a>\n\n"
-            f"After joining, use this command again 👆",
+            f"After joining, use the command again. 👆",
             parse_mode="HTML",
             disable_web_page_preview=True
         )
         return
 
-    # ✅ User has joined — send bot link only, no file upload
-    text, buttons = build_bot_link_message(user.first_name)
-    await msg.reply_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
-    )
+    # ── 2. Must be a reply to something ──
+    replied = msg.reply_to_message
+    if replied is None:
+        await msg.reply_text(
+            f"<b>👋 Hey {user.first_name}!</b>\n\n"
+            f"Please <b>reply to a media message</b> and then use this command!\n\n"
+            f"<b>How to use:</b>\n"
+            f"1️⃣ Find any photo / video / file message in the group\n"
+            f"2️⃣ <b>Reply</b> to that message\n"
+            f"3️⃣ Type <code>/tgm</code> in the reply\n"
+            f"4️⃣ Bot will send the link right here in the group ✅",
+            parse_mode="HTML"
+        )
+        return
+
+    # ── 3. Replied message must have a supported file ──
+    has_media = any([
+        replied.photo, replied.document, replied.video,
+        replied.audio, replied.voice, replied.video_note, replied.sticker,
+    ])
+    if not has_media:
+        await msg.reply_text(
+            "❌ The replied message does not contain any supported file.\n\n"
+            "Please reply to a 📷 Photo, 🎬 Video, 📄 Document, 🎵 Audio, 🎤 Voice, 📹 Video Note, or 🎭 Sticker.",
+            parse_mode="HTML"
+        )
+        return
+
+    # ── 4. Upload replied file & give link right here in group ──
+    await upload_and_reply(replied, msg, context)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -375,16 +369,16 @@ def main():
     log.info("🚀 Starting MeowBox Bot...")
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ── Private chat commands ──
+    # Private
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("help",  help_cmd))
 
-    # ── Group commands (also handles when used as reply to media) ──
-    app.add_handler(CommandHandler("tgm",      group_bot_command))
-    app.add_handler(CommandHandler("tm",       group_bot_command))
-    app.add_handler(CommandHandler("meowbox",  group_bot_command))
+    # Group commands — reply to media → upload → link in group
+    app.add_handler(CommandHandler("tgm",     group_bot_command))
+    app.add_handler(CommandHandler("tm",      group_bot_command))
+    app.add_handler(CommandHandler("meowbox", group_bot_command))
 
-    # ── File handler — PRIVATE CHAT ONLY, filter level blocks groups ──
+    # Direct file upload — private only
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & (
             filters.PHOTO
@@ -398,7 +392,7 @@ def main():
         handle_file
     ))
 
-    # ── Text handler — private only ──
+    # Text — private only
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         handle_text

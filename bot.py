@@ -18,8 +18,8 @@ load_dotenv()
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 BOT_TOKEN        = os.environ["BOT_TOKEN"]
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")       # e.g. @YourChannel
-BOT_USERNAME     = os.environ.get("BOT_USERNAME", "")           # e.g. YourBot (no @)
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "")
+BOT_USERNAME     = os.environ.get("BOT_USERNAME", "")
 DEVELOPER_ID     = int(os.environ.get("DEVELOPER_ID", "0"))
 WELCOME_IMAGE    = os.environ.get("WELCOME_IMAGE", "https://files.tgvibes.online/WZPorLVw.png")
 FORCE_SUB        = os.environ.get("FORCE_SUB", "false").lower() == "true"
@@ -36,17 +36,14 @@ log = logging.getLogger(__name__)
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def clean_channel(username: str) -> str:
-    """Strip leading @ from channel username."""
     return username.lstrip("@")
 
 
 def is_private(update: Update) -> bool:
-    """Return True if the message is in a private chat."""
     return update.effective_chat.type == "private"
 
 
 def is_group(update: Update) -> bool:
-    """Return True if the message is in a group or supergroup."""
     return update.effective_chat.type in ("group", "supergroup")
 
 
@@ -89,13 +86,11 @@ def fmt_size(b: int) -> str:
 # ─── Private Chat Handlers ────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Welcome message — only works in private chat."""
     if not is_private(update):
         return
 
     user = update.effective_user
 
-    # Buttons: Developer + Channel + Source Code
     buttons = []
     if DEVELOPER_ID:
         buttons.append([InlineKeyboardButton("Developer 👨‍💻", url="https://t.me/BadMundaXD")])
@@ -117,7 +112,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
 
-    # Try send_photo first, then reply_photo, then text fallback
     try:
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
@@ -128,7 +122,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     except Exception as e:
-        log.warning(f"send_photo (URL) failed: {e}")
+        log.warning(f"send_photo failed: {e}")
 
     try:
         await update.message.reply_photo(
@@ -141,7 +135,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.warning(f"reply_photo failed: {e}")
 
-    # Last resort: text only
     try:
         await update.message.reply_text(
             caption,
@@ -149,7 +142,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     except Exception as e:
-        log.error(f"Text fallback also failed: {e}")
+        log.error(f"Text fallback failed: {e}")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,11 +164,15 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-
+    """
+    Handle incoming files — PRIVATE CHAT ONLY.
+    Files sent in groups are completely ignored, no reply at all.
+    """
+    # Group messages — silently ignore, no reply
     if not is_private(update):
-        return  # Group vich file bhejo taan chup raho, kuch na karo
+        return
 
+    msg = update.message
     user_id = update.effective_user.id
 
     if not await check_subscription(user_id, context):
@@ -239,7 +236,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await msg.reply_text("⏳ <b>Uploading to MeowBox...</b>", parse_mode="HTML")
 
     path = None
-    url = None
     try:
         tg_file = await context.bot.get_file(file_obj.file_id)
         path = await tg_file.download_to_drive(filename)
@@ -256,28 +252,20 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<i>♾️ Permanent — never expires</i>"
         )
 
-        # Try copy_text button (newer Telegram Bot API feature)
         try:
             buttons = [
                 [InlineKeyboardButton("📋 Copy Link", copy_text=url)],
                 [InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={url}")],
             ]
-            await status_msg.edit_text(
-                result_text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            await status_msg.edit_text(result_text, parse_mode="HTML",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
         except Exception:
-            # Fallback: open link button if copy_text not supported
             buttons = [
                 [InlineKeyboardButton("🔗 Open Link", url=url)],
                 [InlineKeyboardButton("📤 Share", url=f"https://t.me/share/url?url={url}")],
             ]
-            await status_msg.edit_text(
-                result_text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            await status_msg.edit_text(result_text, parse_mode="HTML",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
 
     except Exception as e:
         log.error(f"Upload error: {e}")
@@ -303,9 +291,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def group_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handles /tgm, /tm, /meowbox commands — works ONLY in groups.
+    /tgm /tm /meowbox — works in groups only.
+    Checks channel membership, then sends bot link.
     """
     msg = update.message
+    if msg is None:
+        return
 
     if not is_group(update):
         await msg.reply_text(
@@ -323,15 +314,15 @@ async def group_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ch = clean_channel(CHANNEL_USERNAME)
         await msg.reply_text(
             f"<b>👋 Hey {user.first_name}!</b>\n\n"
-            f"You need to <b>join our channel first</b> before using this bot.\n\n"
+            f"Please <b>join our channel first</b>, then you can use this bot!\n\n"
             f"<a href='https://t.me/{ch}'>👉 Join @{ch}</a>\n\n"
-            f"After joining, use this command again to get the bot link!",
+            f"After joining, use this command again 👆",
             parse_mode="HTML",
             disable_web_page_preview=True
         )
         return
 
-    # FIX: properly strip @ from BOT_USERNAME
+    # User has joined — send bot link
     bot_user = clean_channel(BOT_USERNAME) if BOT_USERNAME else None
     bot_link = f"https://t.me/{bot_user}" if bot_user else None
 
@@ -339,17 +330,18 @@ async def group_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if bot_link:
         buttons.append([InlineKeyboardButton("📩 Open MeowBox Bot", url=bot_link)])
     if CHANNEL_USERNAME:
-        buttons.append([InlineKeyboardButton("📢 Our Channel", url=f"https://t.me/{clean_channel(CHANNEL_USERNAME)}")])
+        buttons.append([InlineKeyboardButton("📢 Our Channel",
+                        url=f"https://t.me/{clean_channel(CHANNEL_USERNAME)}")])
 
     await msg.reply_text(
         f"<b>👋 Hey {user.first_name}!</b>\n\n"
         f"<b>🐱 MeowBox File Uploader</b>\n\n"
-        f"Upload any file and get a permanent direct link!\n\n"
+        f"Send any file and get a permanent direct link!\n\n"
         f"<b>✅ Supported:</b>\n"
         f"📷 Photos  •  🎬 Videos  •  📄 Documents\n"
         f"🎵 Audio  •  🎤 Voice  •  📹 Video Notes  •  🎭 Stickers\n\n"
         f"<b>📦 Max size:</b> {MAX_FILE_MB} MB\n\n"
-        f"<i>Click below to open a private chat with the bot and send your file 👇</i>",
+        f"<i>Click the button below to open a private chat and send your file 👇</i>",
         parse_mode="HTML",
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
@@ -362,25 +354,34 @@ def main():
     log.info("🚀 Starting MeowBox Bot...")
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Private chat
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
 
+    # Group commands
     app.add_handler(CommandHandler("tgm", group_bot_command))
     app.add_handler(CommandHandler("tm", group_bot_command))
     app.add_handler(CommandHandler("meowbox", group_bot_command))
 
+    # File handler — private chat only (group files are ignored at filter level)
     app.add_handler(MessageHandler(
-        filters.PHOTO
-        | filters.Document.ALL
-        | filters.VIDEO
-        | filters.AUDIO
-        | filters.VOICE
-        | filters.VIDEO_NOTE
-        | filters.Sticker.ALL,
+        filters.ChatType.PRIVATE & (
+            filters.PHOTO
+            | filters.Document.ALL
+            | filters.VIDEO
+            | filters.AUDIO
+            | filters.VOICE
+            | filters.VIDEO_NOTE
+            | filters.Sticker.ALL
+        ),
         handle_file
     ))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # Text handler — private only
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+        handle_text
+    ))
 
     log.info("✅ Bot running!")
     app.run_polling(drop_pending_updates=True)
@@ -388,4 +389,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
